@@ -112,7 +112,7 @@ logadas para rastreabilidade:
 | motoristas | CPF inválido | flag `cpf_valido` (dígitos verificadores) |
 | viagens | `data_inicio` nula | descartadas (métricas temporais dependem dela) |
 | viagens | `distancia_km` negativa | anulada |
-| viagens | `veiculo_id`/`motorista_id` órfãos | **integridade referencial**: removidas (3000 → 2892) |
+| viagens | `veiculo_id`/`motorista_id` órfãos | **integridade referencial**: movidas para quarentena (3000 → 2892) |
 | posições | lat/lon zeradas ou fora do Brasil | descartadas (bounding box) |
 | posições | velocidade negativa/absurda | descartadas (0–140 km/h) |
 | posições | `timestamp` nulo | descartadas |
@@ -120,6 +120,27 @@ logadas para rastreabilidade:
 
 Padronizações: datas convertidas para `date`/`timestamp`, strings com `trim`,
 categóricos (`status`, `tipo`, `categoria_cnh`) normalizados.
+
+**Quarentena (não descarte silencioso):** todo registro rejeitado é gravado em
+`lakehouse/rejeitados/{viagens,posicoes}` com o campo `motivo_rejeicao`, e
+exposto no DuckDB como `rejeitados_viagens` / `rejeitados_posicoes`. Assim
+nenhuma linha some sem rastro — dá para auditar exatamente o que saiu e por quê
+(108 viagens e ~2,3 mil posições). O painel mostra a contagem por motivo.
+
+## Observações sobre os dados (fidelidade)
+
+Alguns resultados parecem "fracos", mas são **fiéis à base** (validados por
+recomputação independente) e por isso **não** foram ajustados:
+
+- **Um único mês (2026-04):** todas as viagens iniciam nesse período; as séries
+  mensais têm um ponto só.
+- **Tempo médio parado ≈ 0:** cada passagem por geocerca tem apenas **um** ponto
+  de GPS registrado (amostragem esparsa), então não há permanência mensurável.
+  Só `centro_distribuicao` (113) e `cliente` (30) são tocados; pedágio/posto
+  nunca têm posição dentro.
+- **Utilização da frota = 100%:** os 123 veículos ativos rodaram no período.
+- **143 de 53.908 posições dentro de geocercas:** correto — as cercas têm ~1 km
+  e há ~19 pontos por viagem em rotas longas, então poucos pontos caem dentro.
 
 ---
 
@@ -178,7 +199,7 @@ produzindo `eventos_geocerca` com entrada, saída e tempo parado por visita.
 │   ├── silver.py             # limpeza + integridade
 │   ├── geo.py                # point-in-polygon + eventos
 │   ├── gold.py               # modelo + métricas
-│   ├── lakehouse.py          # views DuckDB
+│   ├── lakehouse.py          # views DuckDB (gold + rejeitados)
 │   └── pipeline.py           # orquestrador
 ├── dashboard/app.py          # Streamlit
 ├── tests/                    # pytest

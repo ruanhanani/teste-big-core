@@ -52,6 +52,10 @@ class Config:
     def gold_dir(self) -> Path:
         return self.lakehouse_dir / "gold"
 
+    @property
+    def rejeitados_dir(self) -> Path:
+        return self.lakehouse_dir / "rejeitados"
+
 
 def load_config() -> Config:
     return Config(

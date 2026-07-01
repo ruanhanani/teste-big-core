@@ -31,6 +31,13 @@ def _write(df: DataFrame, cfg: Config, name: str) -> DataFrame:
     return df
 
 
+def _write_rejeitados(df: DataFrame, cfg: Config, name: str) -> None:
+    """Quarentena: registros descartados ficam rastreaveis, com o motivo."""
+    df = df.withColumn("camada_origem", F.lit(name))
+    df.write.mode("overwrite").parquet(str(cfg.rejeitados_dir / name))
+    logger.info("rejeitados.%s -> %s registros", name, df.count())
+
+
 def _clean_veiculos(spark: SparkSession, cfg: Config) -> DataFrame:
     df = _read_bronze(spark, cfg, "veiculos")
     df = (
@@ -87,21 +94,42 @@ def _clean_viagens(
         .withColumn("data_fim_real", F.to_timestamp("data_fim_real"))
         .withColumn("distancia_km", F.col("distancia_km").cast("int"))
         .withColumn("peso_carga_kg", F.col("peso_carga_kg").cast("int"))
-        # data_inicio e obrigatoria para qualquer metrica temporal.
-        .filter(F.col("data_inicio").isNotNull())
+    )
+
+    # Flags de existencia para integridade referencial.
+    vids = veiculos.select("veiculo_id").distinct().withColumn("_v", F.lit(True))
+    mids = motoristas.select("motorista_id").distinct().withColumn("_m", F.lit(True))
+    df = df.join(vids, "veiculo_id", "left").join(mids, "motorista_id", "left")
+
+    # Motivo de rejeicao (prioridade: data > veiculo > motorista).
+    motivo = (
+        F.when(F.col("data_inicio").isNull(), "data_inicio ausente")
+        .when(F.col("_v").isNull(), "veiculo_id inexistente")
+        .when(F.col("_m").isNull(), "motorista_id inexistente")
+    )
+    df = df.withColumn("motivo_rejeicao", motivo).drop("_v", "_m")
+
+    rejeitados = df.filter(F.col("motivo_rejeicao").isNotNull())
+    _write_rejeitados(
+        rejeitados.select(
+            "viagem_id", "veiculo_id", "motorista_id", "status", "data_inicio",
+            "motivo_rejeicao",
+        ),
+        cfg,
+        "viagens",
+    )
+
+    validas = (
+        df.filter(F.col("motivo_rejeicao").isNull())
+        .drop("motivo_rejeicao")
         # distancia negativa e fisicamente impossivel -> nula.
         .withColumn(
             "distancia_km",
             F.when(F.col("distancia_km") < 0, None).otherwise(F.col("distancia_km")),
         )
     )
-
-    # Integridade referencial: descarta viagens com veiculo/motorista inexistente.
-    df = df.join(veiculos.select("veiculo_id"), "veiculo_id", "left_semi")
-    df = df.join(motoristas.select("motorista_id"), "motorista_id", "left_semi")
-
-    logger.info("viagens: %s brutas -> %s validas", bruto, df.count())
-    return _write(df, cfg, "viagens")
+    logger.info("viagens: %s brutas -> %s validas", bruto, validas.count())
+    return _write(validas, cfg, "viagens")
 
 
 def _clean_posicoes(spark: SparkSession, cfg: Config, viagens: DataFrame) -> DataFrame:
@@ -113,24 +141,38 @@ def _clean_posicoes(spark: SparkSession, cfg: Config, viagens: DataFrame) -> Dat
         df.dropDuplicates(["posicao_id"])
         .withColumn("timestamp", F.to_timestamp("timestamp"))
         .withColumn("velocidade_kmh", F.col("velocidade_kmh").cast("int"))
-        .filter(F.col("timestamp").isNotNull())
-        # Coordenadas zeradas ou fora do Brasil sao invalidas.
-        .filter((F.col("latitude") != 0) & (F.col("longitude") != 0))
-        .filter(
-            F.col("latitude").between(bbox.lat_min, bbox.lat_max)
-            & F.col("longitude").between(bbox.lon_min, bbox.lon_max)
-        )
-        # Velocidade negativa ou absurda para um caminhao e ruido de telemetria.
-        .filter(
-            F.col("velocidade_kmh").between(0, cfg.velocidade_max_kmh)
-        )
     )
 
-    # Posicoes so interessam se pertencem a uma viagem valida.
-    df = df.join(viagens.select("viagem_id"), "viagem_id", "left_semi")
+    # Marca existencia de viagem valida (posicoes de viagens rejeitadas ficam orfas).
+    vv = viagens.select("viagem_id").distinct().withColumn("_viag", F.lit(True))
+    df = df.join(vv, "viagem_id", "left")
 
-    logger.info("posicoes: %s brutas -> %s validas", bruto, df.count())
-    return _write(df, cfg, "posicoes")
+    fora_do_brasil = ~(
+        F.col("latitude").between(bbox.lat_min, bbox.lat_max)
+        & F.col("longitude").between(bbox.lon_min, bbox.lon_max)
+    )
+    motivo = (
+        F.when(F.col("timestamp").isNull(), "timestamp ausente")
+        .when((F.col("latitude") == 0) | (F.col("longitude") == 0), "coordenada zerada")
+        .when(fora_do_brasil, "fora do Brasil")
+        .when(~F.col("velocidade_kmh").between(0, cfg.velocidade_max_kmh), "velocidade invalida")
+        .when(F.col("_viag").isNull(), "viagem inexistente")
+    )
+    df = df.withColumn("motivo_rejeicao", motivo).drop("_viag")
+
+    rejeitados = df.filter(F.col("motivo_rejeicao").isNotNull())
+    _write_rejeitados(
+        rejeitados.select(
+            "posicao_id", "viagem_id", "veiculo_id", "latitude", "longitude",
+            "timestamp", "velocidade_kmh", "motivo_rejeicao",
+        ),
+        cfg,
+        "posicoes",
+    )
+
+    validas = df.filter(F.col("motivo_rejeicao").isNull()).drop("motivo_rejeicao")
+    logger.info("posicoes: %s brutas -> %s validas", bruto, validas.count())
+    return _write(validas, cfg, "posicoes")
 
 
 def _clean_geocercas(spark: SparkSession, cfg: Config) -> DataFrame:
@@ -146,6 +188,7 @@ def _clean_geocercas(spark: SparkSession, cfg: Config) -> DataFrame:
 
 def run(spark: SparkSession, cfg: Config) -> None:
     cfg.silver_dir.mkdir(parents=True, exist_ok=True)
+    cfg.rejeitados_dir.mkdir(parents=True, exist_ok=True)
     veiculos = _clean_veiculos(spark, cfg)
     motoristas = _clean_motoristas(spark, cfg)
     _clean_geocercas(spark, cfg)

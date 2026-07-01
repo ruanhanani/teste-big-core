@@ -16,6 +16,7 @@ logger = get_logger("lakehouse")
 
 # datasets extras (fora da gold) uteis para o dashboard.
 _SILVER_VIEWS = ("posicoes_geo", "eventos_geocerca")
+_REJEITADOS_VIEWS = ("viagens", "posicoes")
 
 
 def _register(con: duckdb.DuckDBPyConnection, view: str, path) -> None:
@@ -40,6 +41,12 @@ def run(cfg: Config) -> None:
             if path.exists():
                 _register(con, view, path)
                 registrados.append(view)
+        for view in _REJEITADOS_VIEWS:
+            path = cfg.rejeitados_dir / view
+            if path.exists():
+                nome = f"rejeitados_{view}"
+                _register(con, nome, path)
+                registrados.append(nome)
         logger.info("duckdb -> %s views: %s", len(registrados), ", ".join(registrados))
     finally:
         con.close()
