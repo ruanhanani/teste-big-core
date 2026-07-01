@@ -99,16 +99,22 @@ with col4:
 col5, col6 = st.columns(2)
 with col5:
     st.subheader("Tempo medio parado por tipo de geocerca")
-    df = q("SELECT tipo_geocerca, tempo_medio_parado_min FROM tempo_medio_parado_por_tipo ORDER BY tempo_medio_parado_min DESC")
-    fig = px.bar(df, x="tipo_geocerca", y="tempo_medio_parado_min")
-    st.plotly_chart(fig, use_container_width=True)
+    df = q(
+        "SELECT tipo_geocerca, tempo_medio_parado_min, qtd_visitas "
+        "FROM tempo_medio_parado_por_tipo ORDER BY qtd_visitas DESC"
+    )
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.caption(
+        "Valor ~0: cada passagem por geocerca tem um unico ponto de GPS registrado, "
+        "entao nao ha permanencia mensuravel (fiel a base)."
+    )
 
 with col6:
     st.subheader("Posicoes GPS (amostra)")
     df = q(
         "SELECT latitude, longitude, classificacao FROM posicoes_geo USING SAMPLE 5000 ROWS"
     )
-    fig = px.scatter_map(
+    fig = px.scatter_mapbox(
         df,
         lat="latitude",
         lon="longitude",
@@ -116,7 +122,7 @@ with col6:
         zoom=3,
         height=400,
     )
-    fig.update_layout(map_style="open-street-map", margin=dict(l=0, r=0, t=0, b=0))
+    fig.update_layout(mapbox_style="open-street-map", margin=dict(l=0, r=0, t=0, b=0))
     st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
