@@ -111,14 +111,23 @@ with col5:
 
 with col6:
     st.subheader("Posicoes GPS (amostra)")
+    # Mostra TODAS as posicoes em geocerca (minoria: ~143) + amostra das de rota,
+    # senao os pontos em geocerca somem no meio das dezenas de milhar em rota.
     df = q(
-        "SELECT latitude, longitude, classificacao FROM posicoes_geo USING SAMPLE 5000 ROWS"
+        "SELECT latitude, longitude, classificacao FROM posicoes_geo WHERE classificacao='em_geocerca' "
+        "UNION ALL "
+        "SELECT latitude, longitude, classificacao FROM posicoes_geo "
+        "WHERE classificacao='em_rota' USING SAMPLE 4000 ROWS"
     )
+    df["destaque"] = df["classificacao"].map({"em_geocerca": 9, "em_rota": 3})
     fig = px.scatter_mapbox(
         df,
         lat="latitude",
         lon="longitude",
         color="classificacao",
+        size="destaque",
+        size_max=11,
+        color_discrete_map={"em_rota": "#7FB0D3", "em_geocerca": "#E4572E"},
         zoom=3,
         height=400,
     )
