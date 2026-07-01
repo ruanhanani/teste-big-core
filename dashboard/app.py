@@ -51,6 +51,15 @@ taxa = (atraso["a"][0] / atraso["t"][0]) if atraso["t"][0] else 0
 c3.metric("Taxa de atraso", f"{taxa*100:.1f}%")
 c4.metric("Tempo medio parado", f"{parado['m'][0]:.0f} min")
 
+st.info(
+    "Observacoes sobre a base (fieis aos dados, nao ajustadas):\n"
+    "- As viagens concentram-se em um unico mes (2026-04), entao as series "
+    "mensais tem um ponto so.\n"
+    "- **Tempo medio parado ~ 0**: cada passagem por geocerca tem um unico ponto "
+    "de GPS registrado, entao nao ha permanencia mensuravel.\n"
+    "- **Utilizacao 100%**: todos os veiculos ativos realizaram viagens no periodo."
+)
+
 st.divider()
 
 # ---- Viagens por mes e status --------------------------------------------
@@ -120,3 +129,24 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
 )
+
+st.divider()
+st.subheader("Qualidade dos dados — quarentena")
+st.caption(
+    "Registros descartados na limpeza sao rastreados (nao apagados), com o motivo."
+)
+qc1, qc2 = st.columns(2)
+with qc1:
+    st.markdown("**Viagens rejeitadas por motivo**")
+    st.dataframe(
+        q("SELECT motivo_rejeicao, COUNT(*) AS qtd FROM rejeitados_viagens GROUP BY 1 ORDER BY qtd DESC"),
+        use_container_width=True,
+        hide_index=True,
+    )
+with qc2:
+    st.markdown("**Posicoes rejeitadas por motivo**")
+    st.dataframe(
+        q("SELECT motivo_rejeicao, COUNT(*) AS qtd FROM rejeitados_posicoes GROUP BY 1 ORDER BY qtd DESC"),
+        use_container_width=True,
+        hide_index=True,
+    )
