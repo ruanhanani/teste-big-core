@@ -59,12 +59,14 @@ with col1:
     st.subheader("Viagens por mes e status")
     df = q("SELECT mes_referencia, status, qtd_viagens FROM viagens_por_mes_status ORDER BY mes_referencia")
     fig = px.bar(df, x="mes_referencia", y="qtd_viagens", color="status", barmode="stack")
+    fig.update_xaxes(type="category")
     st.plotly_chart(fig, use_container_width=True)
 
 with col2:
     st.subheader("Taxa de atraso por mes")
     df = q("SELECT mes_referencia, taxa_atraso FROM taxa_atraso_por_mes ORDER BY mes_referencia")
-    fig = px.line(df, x="mes_referencia", y="taxa_atraso", markers=True)
+    fig = px.bar(df, x="mes_referencia", y="taxa_atraso")
+    fig.update_xaxes(type="category")
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -80,6 +82,7 @@ with col4:
     st.subheader("Utilizacao da frota por mes")
     df = q("SELECT mes_referencia, taxa_utilizacao FROM utilizacao_frota_por_mes ORDER BY mes_referencia")
     fig = px.bar(df, x="mes_referencia", y="taxa_utilizacao")
+    fig.update_xaxes(type="category")
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
 
