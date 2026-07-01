@@ -1,0 +1,34 @@
+services:
+  # Etapa 1: roda o pipeline ETL (PySpark) e monta o catalogo DuckDB.
+  pipeline:
+    build: .
+    environment:
+      DATA_DIR: /app/data
+      LAKEHOUSE_DIR: /app/lakehouse
+      DUCKDB_PATH: /app/lakehouse/warehouse.duckdb
+      SPARK_MASTER: local[*]
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+    volumes:
+      - lakehouse:/app/lakehouse
+
+  # Etapa 2: sobe o dashboard so depois do pipeline concluir com sucesso.
+  dashboard:
+    build: .
+    depends_on:
+      pipeline:
+        condition: service_completed_successfully
+    environment:
+      DUCKDB_PATH: /app/lakehouse/warehouse.duckdb
+      LAKEHOUSE_DIR: /app/lakehouse
+    command: >
+      streamlit run dashboard/app.py
+      --server.address=0.0.0.0
+      --server.port=8501
+      --server.headless=true
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    volumes:
+      - lakehouse:/app/lakehouse
+
+volumes:
+  lakehouse:
