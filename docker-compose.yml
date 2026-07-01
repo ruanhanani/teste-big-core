@@ -23,10 +23,10 @@ services:
     command: >
       streamlit run dashboard/app.py
       --server.address=0.0.0.0
-      --server.port=8501
+      --server.port=8502
       --server.headless=true
     ports:
-      - "${DASHBOARD_PORT:-8501}:8501"
+      - "${DASHBOARD_PORT:-8502}:8502"
     volumes:
       - lakehouse:/app/lakehouse
 

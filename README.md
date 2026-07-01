@@ -65,7 +65,7 @@ docker compose up --build
 ```
 
 Isso executa o pipeline completo e, ao concluir, sobe o dashboard em
-<http://localhost:8501>.
+<http://localhost:8502>.
 
 ### Local (desenvolvimento)
 
@@ -96,7 +96,7 @@ hardcoded no código.
 | `SPARK_DRIVER_MEMORY` | `2g` | Memória do driver |
 | `BR_LAT_MIN/MAX`, `BR_LON_MIN/MAX` | bbox do Brasil | Filtro de coordenadas válidas |
 | `VELOCIDADE_MAX_KMH` | `140` | Teto físico de velocidade para caminhão |
-| `DASHBOARD_PORT` | `8501` | Porta do Streamlit |
+| `DASHBOARD_PORT` | `8502` | Porta do Streamlit |
 
 ---
 

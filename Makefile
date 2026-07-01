@@ -12,7 +12,7 @@ pipeline:
 	python -m src.pipeline
 
 dashboard:
-	streamlit run dashboard/app.py
+	streamlit run dashboard/app.py --server.port=8502
 
 test:
 	pytest -q
