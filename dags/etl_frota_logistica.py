@@ -32,8 +32,8 @@ Pipeline medallion executado via PySpark (`local[*]`) e catalogo DuckDB.
 | silver | Limpeza + quarentena | Parquet confiavel |
 | geo | Point-in-polygon | posicoes_geo, eventos |
 | gold | Metricas de negocio | 8 tabelas gold |
-| lakehouse | DuckDB views | warehouse.duckdb |
-| validar_gold | QA | contagem viagens gold |
+| lakehouse | DuckDB views | medallion.duckdb |
+| validar_gold | QA | schemas gold/silver/rejeitados |
 
 **Idempotente:** cada etapa usa `overwrite`. Reprocessar nao duplica dados.
 """
@@ -90,14 +90,15 @@ with DAG(
             "if not db.exists():\n"
             "    raise SystemExit(f'DuckDB ausente: {db}')\n"
             "con = duckdb.connect(str(db), read_only=True)\n"
-            "n = con.execute('SELECT COUNT(*) FROM viagens_enriquecidas').fetchone()[0]\n"
+            "n = con.execute('SELECT COUNT(*) FROM gold.viagens_enriquecidas').fetchone()[0]\n"
             "if n < 2800:\n"
-            "    raise SystemExit(f'viagens_enriquecidas={n}, esperado ~2892')\n"
-            "views = {r[0] for r in con.execute('SHOW TABLES').fetchall()}\n"
-            "for v in ('geocercas', 'posicoes_geo', 'viagens_enriquecidas'):\n"
-            "    if v not in views:\n"
-            "        raise SystemExit(f'view ausente: {v}')\n"
-            "print(f'OK: {n} viagens, {len(views)} views DuckDB')\n"
+            "    raise SystemExit(f'gold.viagens_enriquecidas={n}, esperado ~2892')\n"
+            "need = [('gold','viagens_enriquecidas'),('silver','geocercas'),('silver','posicoes_geo')]\n"
+            "for sch, tbl in need:\n"
+            "    ok = con.execute('SELECT 1 FROM information_schema.tables WHERE table_schema=? AND table_name=?', [sch, tbl]).fetchone()\n"
+            "    if not ok:\n"
+            "        raise SystemExit(f'view ausente: {sch}.{tbl}')\n"
+            "print(f'OK: {n} viagens gold, catalogo medallion validado')\n"
             "PY"
         ),
         execution_timeout=timedelta(minutes=5),

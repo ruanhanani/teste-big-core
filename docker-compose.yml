@@ -6,7 +6,7 @@
 x-etl-env: &etl-env
   DATA_DIR: /app/data
   LAKEHOUSE_DIR: /app/lakehouse
-  DUCKDB_PATH: /app/lakehouse/warehouse.duckdb
+  DUCKDB_PATH: /app/lakehouse/medallion.duckdb
   SPARK_MASTER: local[*]
   SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
   SPARK_APP_NAME: teste-big-core
@@ -43,7 +43,7 @@ x-airflow-common:
     - ./src:/app/src
     - ./scripts:/app/scripts
     - ./data:/app/data
-    - lakehouse:/app/lakehouse
+    - ./lakehouse:/app/lakehouse
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -199,16 +199,6 @@ services:
       airflow-dag-processor:
         condition: service_healthy
 
-  # ---- Pipeline legado (sem Airflow): docker compose --profile legacy up pipeline
-  pipeline:
-    profiles: [legacy]
-    build: .
-    environment:
-      <<: *etl-env
-    volumes:
-      - ./data:/app/data
-      - lakehouse:/app/lakehouse
-
   # ---- Dashboard (sobe apos o bootstrap do ETL) ----------------------------
   dashboard:
     build: .
@@ -216,8 +206,7 @@ services:
       etl-bootstrap:
         condition: service_completed_successfully
     environment:
-      DUCKDB_PATH: /app/lakehouse/warehouse.duckdb
-      LAKEHOUSE_DIR: /app/lakehouse
+      <<: *etl-env
     command: >
       streamlit run dashboard/app.py
       --server.address=0.0.0.0
@@ -226,7 +215,7 @@ services:
     ports:
       - "${DASHBOARD_PORT:-8502}:8502"
     volumes:
-      - lakehouse:/app/lakehouse
+      - ./lakehouse:/app/lakehouse
 
   # Flower (monitor Celery): docker compose --profile flower up
   flower:
@@ -248,5 +237,4 @@ services:
         condition: service_completed_successfully
 
 volumes:
-  lakehouse:
   postgres-db-volume:

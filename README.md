@@ -39,7 +39,7 @@ flowchart TB
         GL[GOLD]
     end
 
-    LH[(DuckDB warehouse.duckdb)]
+    LH[(DuckDB medallion.duckdb)]
     DASH[Streamlit :8502]
 
     fontes --> B
@@ -87,7 +87,7 @@ lakehouse/
 ├── rejeitados/             # quarentena auditavel
 │   ├── viagens/
 │   └── posicoes/
-└── warehouse.duckdb        # catalogo SQL (13 views)
+└── medallion.duckdb        # catalogo SQL (schemas bronze/silver/gold/rejeitados)
 ```
 
 Escritas em `mode("overwrite")` + `partitionOverwriteMode=dynamic` — reexecutar
@@ -133,7 +133,6 @@ make airflow-logs        # logs worker + scheduler
 make flower              # monitor Celery (porta 5555)
 make test                # pytest local
 make pipeline            # ETL direto, sem Airflow
-make pipeline-docker     # ETL via container (profile legacy)
 ```
 
 ### Pipeline direto (sem Airflow)
@@ -255,25 +254,27 @@ Particionado por `mes_referencia`.
 
 ### 5. Lakehouse — camada de serviço (`src/lakehouse.py`)
 
-**Objetivo:** simular o data warehouse do lakehouse sem subir serviço externo.
+**Objetivo:** catalogo SQL sobre Parquet, sem duplicar dados.
 
-DuckDB registra VIEWs sobre Parquet:
-- 8 tabelas gold
-- `posicoes_geo`, `eventos_geocerca`, `geocercas` (silver)
-- `rejeitados_viagens`, `rejeitados_posicoes`
+DuckDB registra VIEWs por schema medallion:
+- **bronze** — 5 datasets brutos
+- **silver** — 7 datasets confiáveis (+ geo)
+- **gold** — 8 métricas analíticas
+- **rejeitados** — quarentena auditável
 
-O dashboard consulta essas views — **zero reprocessamento** no Streamlit.
+O dashboard consulta `gold.*`, `silver.*` e `rejeitados.*` diretamente.
+DBeaver: conecte em `lakehouse/medallion.duckdb` e expanda os schemas.
 
-**Saída:** `lakehouse/warehouse.duckdb`
+**Saída:** `lakehouse/medallion.duckdb`
 
 ---
 
 ### 6. Validação pós-ETL (task Airflow `validar_gold`)
 
 Smoke test automatizado:
-- DuckDB existe
-- `viagens_enriquecidas` ≥ 2.800 linhas
-- Views críticas presentes (`geocercas`, `posicoes_geo`, `viagens_enriquecidas`)
+- `medallion.duckdb` existe
+- `gold.viagens_enriquecidas` ≥ 2.800 linhas
+- Views críticas: `silver.geocercas`, `silver.posicoes_geo`, `gold.viagens_enriquecidas`
 
 ---
 
@@ -302,7 +303,7 @@ scheduler, dag-processor, worker, triggerer.
 
 ## Dashboard (`dashboard/app.py`)
 
-Painel operacional que lê **somente** a gold via DuckDB:
+Painel operacional que lê **gold**, **silver** (geo) e **rejeitados** via `medallion.duckdb`:
 
 - KPIs: viagens, concluídas, taxa de atraso, tempo parado
 - Gráficos por mês/status, top motoristas, utilização frota
@@ -337,7 +338,7 @@ Ver `.env.example`. Principais:
 |----------|--------|-----------|
 | `DATA_DIR` | `/app/data` | Fontes brutas |
 | `LAKEHOUSE_DIR` | `/app/lakehouse` | Raiz medallion |
-| `DUCKDB_PATH` | `lakehouse/warehouse.duckdb` | Catálogo SQL |
+| `DUCKDB_PATH` | `lakehouse/medallion.duckdb` | Catálogo SQL |
 | `SPARK_DRIVER_MEMORY` | `2g` | Memória driver Spark |
 | `BR_LAT/LON_*` | bbox Brasil | Filtro coordenadas |
 | `VELOCIDADE_MAX_KMH` | `140` | Teto velocidade |

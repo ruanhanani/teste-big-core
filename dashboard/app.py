@@ -1,9 +1,12 @@
-"""Dashboard operacional — le a camada gold via DuckDB.
+"""Dashboard operacional — le gold/silver/rejeitados via DuckDB (medallion.duckdb).
 
-Nenhum dado e reprocessado aqui: o Streamlit apenas consulta as VIEWs do
-catalogo DuckDB montado pela etapa `lakehouse` do pipeline.
+Nenhum dado e reprocessado aqui: o Streamlit consulta views do catalogo montado
+pela etapa `lakehouse` do pipeline.
 """
 from __future__ import annotations
+
+import sys
+from pathlib import Path
 
 import duckdb
 import plotly.express as px
@@ -11,14 +14,16 @@ import plotly.graph_objects as go
 import streamlit as st
 from shapely.wkt import loads as wkt_loads
 
-import sys
-from pathlib import Path
-
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from src.config import load_config  # noqa: E402
 
 st.set_page_config(page_title="Frota • Painel Operacional", layout="wide")
 cfg = load_config()
+
+# Views usadas pelo painel (schema medallion).
+_GOLD = "gold"
+_SILVER = "silver"
+_REJ = "rejeitados"
 
 
 @st.cache_resource
@@ -31,6 +36,16 @@ def q(sql: str):
     return _con().execute(sql).df()
 
 
+def _view_exists(schema: str, name: str) -> bool:
+    return bool(
+        _con().execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = ? AND table_name = ?",
+            [schema, name],
+        ).fetchone()
+    )
+
+
 _TIPO_COR = {
     "centro_distribuicao": ("rgba(46, 139, 87, 0.30)", "#2E8B57"),
     "cliente": ("rgba(228, 87, 46, 0.30)", "#E4572E"),
@@ -40,34 +55,33 @@ _TIPO_COR = {
 
 
 def _mapa_geocercas() -> go.Figure:
-    """Poligonos do cadastro + pings GPS — prova visual do point-in-polygon."""
     geos = q(
-        "SELECT geocerca_id, nome, tipo, geometry_wkt FROM geocercas ORDER BY geocerca_id"
+        f"SELECT geocerca_id, nome, tipo, geometry_wkt FROM {_SILVER}.geocercas "
+        "ORDER BY geocerca_id"
     )
     visitadas = set(
         q(
-            "SELECT DISTINCT geocerca_id FROM posicoes_geo "
+            f"SELECT DISTINCT geocerca_id FROM {_SILVER}.posicoes_geo "
             "WHERE classificacao='em_geocerca'"
         )["geocerca_id"]
     )
     em_cerca = q(
-        """
+        f"""
         SELECT p.latitude, p.longitude, p.geocerca_id, g.nome, g.tipo AS tipo_geocerca
-        FROM posicoes_geo p
-        JOIN geocercas g ON p.geocerca_id = g.geocerca_id
+        FROM {_SILVER}.posicoes_geo p
+        JOIN {_SILVER}.geocercas g ON p.geocerca_id = g.geocerca_id
         WHERE p.classificacao = 'em_geocerca'
         """
     )
     em_rota = q(
-        """
-        SELECT latitude, longitude FROM posicoes_geo
+        f"""
+        SELECT latitude, longitude FROM {_SILVER}.posicoes_geo
         WHERE classificacao = 'em_rota'
         ORDER BY posicao_id LIMIT 4000
         """
     )
 
     fig = go.Figure()
-
     for row in geos.itertuples(index=False):
         poly = wkt_loads(row.geometry_wkt)
         lons, lats = poly.exterior.xy
@@ -89,10 +103,7 @@ def _mapa_geocercas() -> go.Figure:
                 legendgroup=row.tipo,
                 showlegend=False,
                 hovertemplate=(
-                    f"<b>{row.geocerca_id}</b><br>"
-                    f"{row.nome}<br>"
-                    f"tipo: {row.tipo}"
-                    "<extra></extra>"
+                    f"<b>{row.geocerca_id}</b><br>{row.nome}<br>tipo: {row.tipo}<extra></extra>"
                 ),
             )
         )
@@ -117,14 +128,10 @@ def _mapa_geocercas() -> go.Figure:
             text=em_cerca["geocerca_id"],
             customdata=em_cerca[["nome", "tipo_geocerca"]],
             hovertemplate=(
-                "<b>%{text}</b><br>"
-                "%{customdata[0]}<br>"
-                "tipo: %{customdata[1]}"
-                "<extra></extra>"
+                "<b>%{text}</b><br>%{customdata[0]}<br>tipo: %{customdata[1]}<extra></extra>"
             ),
         )
     )
-
     fig.update_layout(
         mapbox_style="open-street-map",
         mapbox=dict(center=dict(lat=-15.5, lon=-47.5), zoom=3.8),
@@ -136,7 +143,7 @@ def _mapa_geocercas() -> go.Figure:
 
 
 st.title("Painel Operacional da Frota")
-st.caption("Dados tratados na camada gold (PySpark) e servidos via DuckDB.")
+st.caption("Camada gold (metricas) + silver (geo) servidas via medallion.duckdb.")
 
 if not cfg.duckdb_path.exists():
     st.error(
@@ -145,10 +152,12 @@ if not cfg.duckdb_path.exists():
     )
     st.stop()
 
-# ---- KPIs -----------------------------------------------------------------
-total = q("SELECT COUNT(*) n, SUM(CASE WHEN status='concluida' THEN 1 ELSE 0 END) c FROM viagens_enriquecidas")
-atraso = q("SELECT SUM(viagens_atrasadas) a, SUM(total_viagens) t FROM taxa_atraso_por_mes")
-parado = q("SELECT ROUND(AVG(tempo_medio_parado_min),1) m FROM tempo_medio_parado_por_tipo")
+total = q(
+    f"SELECT COUNT(*) n, SUM(CASE WHEN status='concluida' THEN 1 ELSE 0 END) c "
+    f"FROM {_GOLD}.viagens_enriquecidas"
+)
+atraso = q(f"SELECT SUM(viagens_atrasadas) a, SUM(total_viagens) t FROM {_GOLD}.taxa_atraso_por_mes")
+parado = q(f"SELECT ROUND(AVG(tempo_medio_parado_min),1) m FROM {_GOLD}.tempo_medio_parado_por_tipo")
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Viagens", f"{int(total['n'][0]):,}".replace(",", "."))
@@ -168,46 +177,56 @@ st.info(
 
 st.divider()
 
-# ---- Viagens por mes e status --------------------------------------------
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Viagens por mes e status")
-    df = q("SELECT mes_referencia, status, qtd_viagens FROM viagens_por_mes_status ORDER BY mes_referencia")
-    fig = px.bar(df, x="mes_referencia", y="qtd_viagens", color="status", barmode="stack")
-    fig.update_xaxes(type="category")
-    st.plotly_chart(fig, use_container_width=True)
+    df = q(
+        f"SELECT mes_referencia, status, qtd_viagens FROM {_GOLD}.viagens_por_mes_status "
+        "ORDER BY mes_referencia"
+    )
+    st.plotly_chart(
+        px.bar(df, x="mes_referencia", y="qtd_viagens", color="status", barmode="stack"),
+        use_container_width=True,
+    )
 
 with col2:
     st.subheader("Taxa de atraso por mes")
-    df = q("SELECT mes_referencia, taxa_atraso FROM taxa_atraso_por_mes ORDER BY mes_referencia")
+    df = q(
+        f"SELECT mes_referencia, taxa_atraso FROM {_GOLD}.taxa_atraso_por_mes "
+        "ORDER BY mes_referencia"
+    )
     fig = px.bar(df, x="mes_referencia", y="taxa_atraso")
-    fig.update_xaxes(type="category")
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
 
-# ---- Top motoristas + utilizacao frota -----------------------------------
 col3, col4 = st.columns(2)
 with col3:
     st.subheader("Top 10 motoristas (viagens concluidas)")
-    df = q("SELECT nome_motorista, viagens_concluidas FROM top10_motoristas ORDER BY viagens_concluidas")
-    fig = px.bar(df, x="viagens_concluidas", y="nome_motorista", orientation="h")
-    st.plotly_chart(fig, use_container_width=True)
+    df = q(
+        f"SELECT nome_motorista, viagens_concluidas FROM {_GOLD}.top10_motoristas "
+        "ORDER BY viagens_concluidas"
+    )
+    st.plotly_chart(
+        px.bar(df, x="viagens_concluidas", y="nome_motorista", orientation="h"),
+        use_container_width=True,
+    )
 
 with col4:
     st.subheader("Utilizacao da frota por mes")
-    df = q("SELECT mes_referencia, taxa_utilizacao FROM utilizacao_frota_por_mes ORDER BY mes_referencia")
+    df = q(
+        f"SELECT mes_referencia, taxa_utilizacao FROM {_GOLD}.utilizacao_frota_por_mes "
+        "ORDER BY mes_referencia"
+    )
     fig = px.bar(df, x="mes_referencia", y="taxa_utilizacao")
-    fig.update_xaxes(type="category")
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
 
-# ---- Tempo parado + mapa geoespacial -------------------------------------
 col5, col6 = st.columns(2)
 with col5:
     st.subheader("Tempo medio parado por tipo de geocerca")
     df = q(
-        "SELECT tipo_geocerca, tempo_medio_parado_min, qtd_visitas "
-        "FROM tempo_medio_parado_por_tipo ORDER BY qtd_visitas DESC"
+        f"SELECT tipo_geocerca, tempo_medio_parado_min, qtd_visitas "
+        f"FROM {_GOLD}.tempo_medio_parado_por_tipo ORDER BY qtd_visitas DESC"
     )
     st.dataframe(df, use_container_width=True, hide_index=True)
     st.caption(
@@ -218,37 +237,25 @@ with col5:
 with col6:
     st.subheader("Resumo geoespacial")
     geo_kpi = q(
-        """
+        f"""
         SELECT
-            (SELECT COUNT(*) FROM geocercas) AS total_geocercas,
-            (SELECT COUNT(DISTINCT geocerca_id) FROM posicoes_geo
+            (SELECT COUNT(*) FROM {_SILVER}.geocercas) AS total_geocercas,
+            (SELECT COUNT(DISTINCT geocerca_id) FROM {_SILVER}.posicoes_geo
              WHERE classificacao='em_geocerca') AS geocercas_com_gps,
-            (SELECT COUNT(*) FROM posicoes_geo
+            (SELECT COUNT(*) FROM {_SILVER}.posicoes_geo
              WHERE classificacao='em_geocerca') AS pings_em_geocerca,
-            (SELECT COUNT(*) FROM posicoes_geo
+            (SELECT COUNT(*) FROM {_SILVER}.posicoes_geo
              WHERE classificacao='em_rota') AS pings_em_rota
         """
     ).iloc[0]
     st.metric("Geocercas no cadastro", int(geo_kpi["total_geocercas"]))
     st.metric("Geocercas com ping GPS", int(geo_kpi["geocercas_com_gps"]))
     st.metric("Pings dentro de geocerca", int(geo_kpi["pings_em_geocerca"]))
-    st.caption(
-        "Legenda do mapa: poligonos = GeoJSON original | "
-        "verde = CD | laranja = cliente | amarelo = pedagio | roxo = posto | "
-        "pontos laranja = GPS classificado em_geocerca."
-    )
 
 st.subheader("Validacao geoespacial — geocercas x posicoes GPS")
-st.caption(
-    "Passe o mouse sobre um poligono (cadastro) ou ponto laranja (GPS) para ver "
-    "geocerca_id, nome e tipo. Cada ponto laranja deve cair dentro do poligono "
-    "da mesma geocerca."
-)
-_tabelas = {r[0] for r in _con().execute("SHOW TABLES").fetchall()}
-if "geocercas" not in _tabelas:
+if not _view_exists(_SILVER, "geocercas"):
     st.warning(
-        "View `geocercas` ainda nao registrada no DuckDB. "
-        "Rode o pipeline novamente (`python -m src.pipeline`) para atualizar o catalogo."
+        "View silver.geocercas ausente. Rode o pipeline (`python -m src.pipeline`)."
     )
 else:
     st.plotly_chart(_mapa_geocercas(), use_container_width=True)
@@ -257,8 +264,8 @@ st.divider()
 st.subheader("Tempo medio por rota (top 15)")
 st.dataframe(
     q(
-        "SELECT origem_nome, destino_nome, tempo_medio_horas, qtd_viagens "
-        "FROM tempo_medio_por_rota ORDER BY qtd_viagens DESC LIMIT 15"
+        f"SELECT origem_nome, destino_nome, tempo_medio_horas, qtd_viagens "
+        f"FROM {_GOLD}.tempo_medio_por_rota ORDER BY qtd_viagens DESC LIMIT 15"
     ),
     use_container_width=True,
     hide_index=True,
@@ -266,21 +273,24 @@ st.dataframe(
 
 st.divider()
 st.subheader("Qualidade dos dados — quarentena")
-st.caption(
-    "Registros descartados na limpeza sao rastreados (nao apagados), com o motivo."
-)
 qc1, qc2 = st.columns(2)
 with qc1:
     st.markdown("**Viagens rejeitadas por motivo**")
     st.dataframe(
-        q("SELECT motivo_rejeicao, COUNT(*) AS qtd FROM rejeitados_viagens GROUP BY 1 ORDER BY qtd DESC"),
+        q(
+            f"SELECT motivo_rejeicao, COUNT(*) AS qtd FROM {_REJ}.viagens "
+            "GROUP BY 1 ORDER BY qtd DESC"
+        ),
         use_container_width=True,
         hide_index=True,
     )
 with qc2:
     st.markdown("**Posicoes rejeitadas por motivo**")
     st.dataframe(
-        q("SELECT motivo_rejeicao, COUNT(*) AS qtd FROM rejeitados_posicoes GROUP BY 1 ORDER BY qtd DESC"),
+        q(
+            f"SELECT motivo_rejeicao, COUNT(*) AS qtd FROM {_REJ}.posicoes "
+            "GROUP BY 1 ORDER BY qtd DESC"
+        ),
         use_container_width=True,
         hide_index=True,
     )

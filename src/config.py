@@ -61,7 +61,7 @@ def load_config() -> Config:
     return Config(
         data_dir=_path("DATA_DIR", "data"),
         lakehouse_dir=_path("LAKEHOUSE_DIR", "lakehouse"),
-        duckdb_path=_path("DUCKDB_PATH", "lakehouse/warehouse.duckdb"),
+        duckdb_path=_path("DUCKDB_PATH", "lakehouse/medallion.duckdb"),
         spark_master=os.getenv("SPARK_MASTER", "local[*]"),
         spark_driver_memory=os.getenv("SPARK_DRIVER_MEMORY", "2g"),
         spark_app_name=os.getenv("SPARK_APP_NAME", "teste-big-core"),
