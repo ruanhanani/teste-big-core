@@ -20,5 +20,9 @@ derby.log
 # Lakehouse gerado pelo pipeline (bronze/silver/gold + duckdb)
 lakehouse/
 
+# Airflow (gerado localmente)
+logs/airflow/
+config/airflow/airflow.cfg
+
 # Env local
 .env

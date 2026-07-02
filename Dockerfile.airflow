@@ -1,0 +1,13 @@
+FROM apache/airflow:3.2.2-python3.11
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openjdk-17-jre-headless procps \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+    PYTHONPATH=/app
+
+USER airflow
+COPY requirements-etl.txt /requirements-etl.txt
+RUN pip install --no-cache-dir -r /requirements-etl.txt

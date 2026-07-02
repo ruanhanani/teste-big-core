@@ -1,21 +1,219 @@
+# Stack completo: Airflow 3.2.2 (orquestracao ETL) + Dashboard Streamlit.
+# Uso: docker compose up --build
+# Airflow UI: http://localhost:8080 (airflow / airflow)
+# Dashboard:  http://localhost:8502
+
+x-etl-env: &etl-env
+  DATA_DIR: /app/data
+  LAKEHOUSE_DIR: /app/lakehouse
+  DUCKDB_PATH: /app/lakehouse/warehouse.duckdb
+  SPARK_MASTER: local[*]
+  SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+  SPARK_APP_NAME: teste-big-core
+  PYTHONPATH: /app
+
+x-airflow-common:
+  &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  env_file:
+    - .env
+  environment:
+    &airflow-common-env
+    <<: *etl-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret_change_me}
+    AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs/airflow:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./config/airflow:/opt/airflow/config
+    - ./src:/app/src
+    - ./scripts:/app/scripts
+    - ./data:/app/data
+    - lakehouse:/app/lakehouse
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+
 services:
-  # Etapa 1: roda o pipeline ETL (PySpark) e monta o catalogo DuckDB.
+  # ---- Infra Airflow -------------------------------------------------------
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-bookworm
+    expose:
+      - 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/{logs,dags,plugins,config}
+        /entrypoint airflow version
+        /entrypoint airflow config list >/dev/null
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/{logs,dags,plugins,config} || true
+        chown -R "${AIRFLOW_UID:-50000}:0" /app/lakehouse || true
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: "0:0"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    environment:
+      <<: *airflow-common-env
+      DUMB_INIT_SETSID: "0"
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-apiserver:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Primeira execucao do ETL via Airflow (substitui o servico pipeline legado).
+  etl-bootstrap:
+    <<: *airflow-common
+    command: python /app/scripts/airflow_bootstrap.py
+    restart: "no"
+    depends_on:
+      airflow-worker:
+        condition: service_healthy
+      airflow-scheduler:
+        condition: service_healthy
+      airflow-dag-processor:
+        condition: service_healthy
+
+  # ---- Pipeline legado (sem Airflow): docker compose --profile legacy up pipeline
   pipeline:
+    profiles: [legacy]
     build: .
     environment:
-      DATA_DIR: /app/data
-      LAKEHOUSE_DIR: /app/lakehouse
-      DUCKDB_PATH: /app/lakehouse/warehouse.duckdb
-      SPARK_MASTER: local[*]
-      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+      <<: *etl-env
     volumes:
+      - ./data:/app/data
       - lakehouse:/app/lakehouse
 
-  # Etapa 2: sobe o dashboard so depois do pipeline concluir com sucesso.
+  # ---- Dashboard (sobe apos o bootstrap do ETL) ----------------------------
   dashboard:
     build: .
     depends_on:
-      pipeline:
+      etl-bootstrap:
         condition: service_completed_successfully
     environment:
       DUCKDB_PATH: /app/lakehouse/warehouse.duckdb
@@ -30,5 +228,25 @@ services:
     volumes:
       - lakehouse:/app/lakehouse
 
+  # Flower (monitor Celery): docker compose --profile flower up
+  flower:
+    <<: *airflow-common
+    profiles: [flower]
+    command: celery flower
+    ports:
+      - "5555:5555"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
 volumes:
   lakehouse:
+  postgres-db-volume:

@@ -1,0 +1,7 @@
+# Dependencias do pipeline ETL (instaladas na imagem Airflow + pipeline).
+pyspark==3.5.1
+shapely==2.0.4
+duckdb==1.1.3
+pandas==2.2.3
+pyarrow==17.0.0
+python-dotenv==1.0.1
