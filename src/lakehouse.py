@@ -15,7 +15,7 @@ from .logging_conf import get_logger
 logger = get_logger("lakehouse")
 
 # datasets extras (fora da gold) uteis para o dashboard.
-_SILVER_VIEWS = ("posicoes_geo", "eventos_geocerca")
+_SILVER_VIEWS = ("posicoes_geo", "eventos_geocerca", "geocercas")
 _REJEITADOS_VIEWS = ("viagens", "posicoes")
 
 

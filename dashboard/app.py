@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import duckdb
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
+from shapely.wkt import loads as wkt_loads
 
 import sys
 from pathlib import Path
@@ -27,6 +29,110 @@ def _con() -> duckdb.DuckDBPyConnection:
 @st.cache_data(ttl=300)
 def q(sql: str):
     return _con().execute(sql).df()
+
+
+_TIPO_COR = {
+    "centro_distribuicao": ("rgba(46, 139, 87, 0.30)", "#2E8B57"),
+    "cliente": ("rgba(228, 87, 46, 0.30)", "#E4572E"),
+    "pedagio": ("rgba(255, 193, 7, 0.30)", "#FFC107"),
+    "posto_combustivel": ("rgba(138, 43, 226, 0.30)", "#8A2BE2"),
+}
+
+
+def _mapa_geocercas() -> go.Figure:
+    """Poligonos do cadastro + pings GPS — prova visual do point-in-polygon."""
+    geos = q(
+        "SELECT geocerca_id, nome, tipo, geometry_wkt FROM geocercas ORDER BY geocerca_id"
+    )
+    visitadas = set(
+        q(
+            "SELECT DISTINCT geocerca_id FROM posicoes_geo "
+            "WHERE classificacao='em_geocerca'"
+        )["geocerca_id"]
+    )
+    em_cerca = q(
+        """
+        SELECT p.latitude, p.longitude, p.geocerca_id, g.nome, g.tipo AS tipo_geocerca
+        FROM posicoes_geo p
+        JOIN geocercas g ON p.geocerca_id = g.geocerca_id
+        WHERE p.classificacao = 'em_geocerca'
+        """
+    )
+    em_rota = q(
+        """
+        SELECT latitude, longitude FROM posicoes_geo
+        WHERE classificacao = 'em_rota'
+        ORDER BY posicao_id LIMIT 4000
+        """
+    )
+
+    fig = go.Figure()
+
+    for row in geos.itertuples(index=False):
+        poly = wkt_loads(row.geometry_wkt)
+        lons, lats = poly.exterior.xy
+        fill, line = _TIPO_COR.get(row.tipo, ("rgba(128,128,128,0.20)", "#888888"))
+        if row.geocerca_id not in visitadas:
+            fill = fill.replace("0.30", "0.10").replace("0.20", "0.08")
+            line_width = 1
+        else:
+            line_width = 2
+        fig.add_trace(
+            go.Scattermapbox(
+                lat=list(lats),
+                lon=list(lons),
+                mode="lines",
+                fill="toself",
+                fillcolor=fill,
+                line=dict(width=line_width, color=line),
+                name=row.nome,
+                legendgroup=row.tipo,
+                showlegend=False,
+                hovertemplate=(
+                    f"<b>{row.geocerca_id}</b><br>"
+                    f"{row.nome}<br>"
+                    f"tipo: {row.tipo}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.add_trace(
+        go.Scattermapbox(
+            lat=em_rota["latitude"],
+            lon=em_rota["longitude"],
+            mode="markers",
+            name="em_rota (amostra fixa)",
+            marker=dict(size=4, color="#7FB0D3", opacity=0.35),
+            hovertemplate="em_rota<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scattermapbox(
+            lat=em_cerca["latitude"],
+            lon=em_cerca["longitude"],
+            mode="markers",
+            name="em_geocerca (todos)",
+            marker=dict(size=10, color="#E4572E", opacity=0.95),
+            text=em_cerca["geocerca_id"],
+            customdata=em_cerca[["nome", "tipo_geocerca"]],
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "%{customdata[0]}<br>"
+                "tipo: %{customdata[1]}"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    fig.update_layout(
+        mapbox_style="open-street-map",
+        mapbox=dict(center=dict(lat=-15.5, lon=-47.5), zoom=3.8),
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=520,
+        legend=dict(orientation="h", yanchor="bottom", y=0.01, x=0.01),
+    )
+    return fig
 
 
 st.title("Painel Operacional da Frota")
@@ -95,7 +201,7 @@ with col4:
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
 
-# ---- Tempo parado por tipo + mapa ----------------------------------------
+# ---- Tempo parado + mapa geoespacial -------------------------------------
 col5, col6 = st.columns(2)
 with col5:
     st.subheader("Tempo medio parado por tipo de geocerca")
@@ -110,29 +216,42 @@ with col5:
     )
 
 with col6:
-    st.subheader("Posicoes GPS (amostra)")
-    # Mostra TODAS as posicoes em geocerca (minoria: ~143) + amostra das de rota,
-    # senao os pontos em geocerca somem no meio das dezenas de milhar em rota.
-    df = q(
-        "SELECT latitude, longitude, classificacao FROM posicoes_geo WHERE classificacao='em_geocerca' "
-        "UNION ALL "
-        "SELECT latitude, longitude, classificacao FROM posicoes_geo "
-        "WHERE classificacao='em_rota' USING SAMPLE 4000 ROWS"
+    st.subheader("Resumo geoespacial")
+    geo_kpi = q(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM geocercas) AS total_geocercas,
+            (SELECT COUNT(DISTINCT geocerca_id) FROM posicoes_geo
+             WHERE classificacao='em_geocerca') AS geocercas_com_gps,
+            (SELECT COUNT(*) FROM posicoes_geo
+             WHERE classificacao='em_geocerca') AS pings_em_geocerca,
+            (SELECT COUNT(*) FROM posicoes_geo
+             WHERE classificacao='em_rota') AS pings_em_rota
+        """
+    ).iloc[0]
+    st.metric("Geocercas no cadastro", int(geo_kpi["total_geocercas"]))
+    st.metric("Geocercas com ping GPS", int(geo_kpi["geocercas_com_gps"]))
+    st.metric("Pings dentro de geocerca", int(geo_kpi["pings_em_geocerca"]))
+    st.caption(
+        "Legenda do mapa: poligonos = GeoJSON original | "
+        "verde = CD | laranja = cliente | amarelo = pedagio | roxo = posto | "
+        "pontos laranja = GPS classificado em_geocerca."
     )
-    df["destaque"] = df["classificacao"].map({"em_geocerca": 9, "em_rota": 3})
-    fig = px.scatter_mapbox(
-        df,
-        lat="latitude",
-        lon="longitude",
-        color="classificacao",
-        size="destaque",
-        size_max=11,
-        color_discrete_map={"em_rota": "#7FB0D3", "em_geocerca": "#E4572E"},
-        zoom=3,
-        height=400,
+
+st.subheader("Validacao geoespacial — geocercas x posicoes GPS")
+st.caption(
+    "Passe o mouse sobre um poligono (cadastro) ou ponto laranja (GPS) para ver "
+    "geocerca_id, nome e tipo. Cada ponto laranja deve cair dentro do poligono "
+    "da mesma geocerca."
+)
+_tabelas = {r[0] for r in _con().execute("SHOW TABLES").fetchall()}
+if "geocercas" not in _tabelas:
+    st.warning(
+        "View `geocercas` ainda nao registrada no DuckDB. "
+        "Rode o pipeline novamente (`python -m src.pipeline`) para atualizar o catalogo."
     )
-    fig.update_layout(mapbox_style="open-street-map", margin=dict(l=0, r=0, t=0, b=0))
-    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.plotly_chart(_mapa_geocercas(), use_container_width=True)
 
 st.divider()
 st.subheader("Tempo medio por rota (top 15)")
