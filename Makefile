@@ -1,4 +1,4 @@
-.PHONY: up down pipeline dashboard test clean airflow-trigger airflow-logs env flower pipeline-stage
+.PHONY: up down pipeline dashboard test clean airflow-trigger airflow-logs env flower pipeline-stage validate
 
 # Sobe stack completo: Airflow + bootstrap ETL + dashboard.
 up:
@@ -33,3 +33,7 @@ airflow-logs:
 
 flower:
 	docker compose --profile flower up -d flower
+
+validate:
+	python scripts/validate_lakehouse.py
+	python scripts/validate_dashboard.py
