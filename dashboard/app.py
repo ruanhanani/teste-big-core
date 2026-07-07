@@ -152,6 +152,18 @@ if not cfg.duckdb_path.exists():
     )
     st.stop()
 
+try:
+    _con()
+except duckdb.IOException as exc:
+    hint = (
+        "No Windows o DuckDB aceita um processo por vez — feche o DBeaver "
+        "(ou qualquer outra conexao com esse arquivo) e recarregue a pagina."
+        if "permission denied" in str(exc).lower() or "already open" in str(exc).lower()
+        else str(exc)
+    )
+    st.error(f"Nao foi possivel abrir {cfg.duckdb_path}: {hint}")
+    st.stop()
+
 total = q(
     f"SELECT COUNT(*) n, SUM(CASE WHEN status='concluida' THEN 1 ELSE 0 END) c "
     f"FROM {_GOLD}.viagens_enriquecidas"
